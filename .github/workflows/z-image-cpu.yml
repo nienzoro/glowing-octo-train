@@ -1,0 +1,166 @@
+name: z-image-cpu
+
+on:
+  workflow_dispatch:
+    inputs:
+      diffusion:
+        description: Z-Image-Turbo diffusion quant
+        type: choice
+        default: Q8_0
+        options: [Q4_K, Q6_K, Q8_0]
+      text_encoder:
+        description: Qwen3-4B-Instruct-2507 text encoder quant
+        type: choice
+        default: Q8_0
+        options: [Q4_K_M, Q8_0]
+      width:
+        description: Image width (multiple of 32)
+        type: string
+        default: '576'
+      height:
+        description: Image height (multiple of 32)
+        type: string
+        default: '1024'
+      steps:
+        description: Sampling steps
+        type: string
+        default: '8'
+      threads:
+        description: CPU threads (empty = all vCPUs from nproc)
+        type: string
+        default: ''
+      swap_gb:
+        description: Swap size in GB (0 = swap off, so an OOM kill means it does not fit; 0-16)
+        type: string
+        default: '0'
+      mmap:
+        description: Pass --mmap (lets the kernel drop the text encoder pages after encoding)
+        type: boolean
+        default: true
+      flash_attn:
+        description: Pass --fa
+        type: boolean
+        default: true
+      vae_tiling:
+        description: Pass --vae-tiling (cuts VAE decode memory, about 4 GB at 576x1024 otherwise)
+        type: boolean
+        default: false
+      prompt:
+        description: "Prompt (public: shown in this public repo's run logs, keep it SFW)"
+        type: string
+        default: 'Sitting on a white sofa with arms extended wide, resting hands on the backrest, legs crossed at the knee, polished digital illustration of a woman with a slender, elegant feminine build and balanced proportions. She has long, straight auburn hair, a fair complexion, and a captivating facial expression. She is wearing a bright turquoise blue halter-style mini dress with subtle shimmering textures and black fishnet stockings paired with black high-heeled sandals featuring gold stud accents. The artwork features smooth value transitions, believable volume, and high-quality idealization.'
+      semi_realistic:
+        description: Prepend the semi-realistic wording (Z-Image renders plain illustration wording as a photo)
+        type: boolean
+        default: true
+      seed:
+        description: Seed (empty = random each run; reuse a run's seed to reproduce it)
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+# One run at a time; queue: max keeps every dispatched run waiting (FIFO, up to 100) instead of cancelling all but the newest.
+concurrency:
+  group: z-image-cpu
+  queue: max
+
+jobs:
+  # Maps the quant choices to URLs, checksums and sizes (approximate whole GB, rounded up); the only place they are listed.
+  resolve:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions: {}
+    env:
+      IN_DIFFUSION: ${{ inputs.diffusion }}
+      IN_TEXT_ENCODER: ${{ inputs.text_encoder }}
+      DM_BASE: https://huggingface.co/leejet/Z-Image-Turbo-GGUF/resolve/main
+      LLM_BASE: https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main
+    outputs:
+      dm_url: ${{ steps.pick.outputs.dm_url }}
+      dm_file: ${{ steps.pick.outputs.dm_file }}
+      dm_sha: ${{ steps.pick.outputs.dm_sha }}
+      dm_gb: ${{ steps.pick.outputs.dm_gb }}
+      llm_url: ${{ steps.pick.outputs.llm_url }}
+      llm_file: ${{ steps.pick.outputs.llm_file }}
+      llm_sha: ${{ steps.pick.outputs.llm_sha }}
+      llm_gb: ${{ steps.pick.outputs.llm_gb }}
+      vae_url: ${{ steps.pick.outputs.vae_url }}
+      vae_file: ${{ steps.pick.outputs.vae_file }}
+      vae_sha: ${{ steps.pick.outputs.vae_sha }}
+      vae_gb: ${{ steps.pick.outputs.vae_gb }}
+    steps:
+      - name: Pick models
+        id: pick
+        run: |
+          set -euo pipefail
+          case "$IN_DIFFUSION" in
+            Q4_K) dm=z_image_turbo-Q4_K.gguf; dm_sha=14b375ab4f226bc5378f68f37e899ef3c2242b8541e61e2bc1aff40976086fbd; dm_gb=4 ;;
+            Q6_K) dm=z_image_turbo-Q6_K.gguf; dm_sha=319f627beac8059b7546f36a7b4d5097b7f4ee6a1fc37585d0f75ca1d12d01af; dm_gb=6 ;;
+            Q8_0) dm=z_image_turbo-Q8_0.gguf; dm_sha=df1c5baa86d1398c979495a6072dbcee79444fdb884a2445582ba0769c44e9a1; dm_gb=7 ;;
+            *) echo "::error::unknown diffusion quant"; exit 1 ;;
+          esac
+          case "$IN_TEXT_ENCODER" in
+            Q4_K_M) llm=Qwen3-4B-Instruct-2507-Q4_K_M.gguf; llm_sha=3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597; llm_gb=3 ;;
+            Q8_0)   llm=Qwen3-4B-Instruct-2507-Q8_0.gguf;   llm_sha=391c1e410fd9f4cf2de2b510273b56a84c19ce18f4fa3bfb3774031dac4ef068; llm_gb=5 ;;
+            *) echo "::error::unknown text encoder quant"; exit 1 ;;
+          esac
+          # FLUX.1-schnell's ae is gated on HF; this is the same AE, ungated.
+          vae=z_image_vae.safetensors
+          vae_url=https://huggingface.co/Tongyi-MAI/Z-Image-Turbo/resolve/main/vae/diffusion_pytorch_model.safetensors
+          vae_sha=f5b59a26851551b67ae1fe58d32e76486e1e812def4696a4bea97f16604d40a3
+          vae_gb=1
+          {
+            echo "dm_url=$DM_BASE/$dm"
+            echo "dm_file=$dm"
+            echo "dm_sha=$dm_sha"
+            echo "dm_gb=$dm_gb"
+            echo "llm_url=$LLM_BASE/$llm"
+            echo "llm_file=$llm"
+            echo "llm_sha=$llm_sha"
+            echo "llm_gb=$llm_gb"
+            echo "vae_url=$vae_url"
+            echo "vae_file=$vae"
+            echo "vae_sha=$vae_sha"
+            echo "vae_gb=$vae_gb"
+          } >> "$GITHUB_OUTPUT"
+
+  probe:
+    needs: resolve
+    # The called upload job deletes the image artifact, so this job must grant actions: write too.
+    permissions:
+      actions: write
+      contents: read
+    uses: ./.github/workflows/sd-cpu-probe.yml
+    with:
+      name: z-image-cpu
+      prompt: ${{ format('{0}{1}', inputs.semi_realistic && 'Polished semi-realistic character illustration in the style of high-end digital concept art, crisp outlines, soft gradient shading, glossy highlights. ' || '', inputs.prompt) }}
+      dm_url: ${{ needs.resolve.outputs.dm_url }}
+      dm_file: ${{ needs.resolve.outputs.dm_file }}
+      dm_sha: ${{ needs.resolve.outputs.dm_sha }}
+      dm_gb: ${{ needs.resolve.outputs.dm_gb }}
+      llm_url: ${{ needs.resolve.outputs.llm_url }}
+      llm_file: ${{ needs.resolve.outputs.llm_file }}
+      llm_sha: ${{ needs.resolve.outputs.llm_sha }}
+      llm_gb: ${{ needs.resolve.outputs.llm_gb }}
+      vae_url: ${{ needs.resolve.outputs.vae_url }}
+      vae_file: ${{ needs.resolve.outputs.vae_file }}
+      vae_sha: ${{ needs.resolve.outputs.vae_sha }}
+      vae_gb: ${{ needs.resolve.outputs.vae_gb }}
+      width: ${{ inputs.width }}
+      height: ${{ inputs.height }}
+      steps: ${{ inputs.steps }}
+      threads: ${{ inputs.threads }}
+      swap_gb: ${{ inputs.swap_gb }}
+      cfg_scale: '1.0'
+      mmap: ${{ inputs.mmap }}
+      flash_attn: ${{ inputs.flash_attn }}
+      vae_tiling: ${{ inputs.vae_tiling }}
+      labels: ${{ inputs.diffusion }}-${{ inputs.text_encoder }}
+      seed: ${{ inputs.seed }}
+    secrets:
+      BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
+      BUCKET_S3_URI: ${{ secrets.BUCKET_S3_URI }}
+      BUCKET_ACCESS_KEY_ID: ${{ secrets.BUCKET_ACCESS_KEY_ID }}
+      BUCKET_SECRET_ACCESS_KEY: ${{ secrets.BUCKET_SECRET_ACCESS_KEY }}
