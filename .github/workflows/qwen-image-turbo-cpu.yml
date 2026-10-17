@@ -8,7 +8,7 @@ on:
       text_encoder:
         description: Qwen3-VL-8B-Instruct text encoder quant
         type: choice
-        default: Q4_K_M
+        default: Q8_0
         options: [Q4_K_M, Q8_0]
       width:
         description: Image width (multiple of 32)
