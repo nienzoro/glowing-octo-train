@@ -103,6 +103,10 @@ on:
         description: Seed (empty = random each run)
         type: string
         default: ''
+      sigmas:
+        description: Optional comma-separated sigma schedule, one value per step plus a trailing 0 (empty = sampler default)
+        type: string
+        default: ''
     secrets:
       BUCKET_S3_ENDPOINT:
         required: false
@@ -142,6 +146,7 @@ env:
   IN_VAE_TILING: ${{ inputs.vae_tiling }}
   IN_LABELS: ${{ inputs.labels }}
   IN_SEED: ${{ inputs.seed }}
+  IN_SIGMAS: ${{ inputs.sigmas }}
   SD_REPO: https://github.com/leejet/stable-diffusion.cpp.git
   SD_COMMIT: 3f8527a46c54ecf4cb4ed6003da8e8982283c73c
   # Upstream's CPU-release flags; part of the build cache key, so editing them rebuilds.
@@ -189,6 +194,42 @@ jobs:
             [[ "$IN_SEED" =~ ^[0-9]+$ ]] || { echo "::error::seed must be an integer"; exit 1; }
             # Length check first so 10# arithmetic cannot overflow on a huge digit string.
             (( ${#IN_SEED} <= 10 && 10#$IN_SEED <= 2147483647 )) || { echo "::error::seed must be at most 2147483647"; exit 1; }
+          fi
+          # Check a user-supplied schedule before any model download or build, so a bad one fails in
+          # seconds instead of after an hour: sd.cpp would otherwise silently rewrite steps to
+          # custom_sigmas_count - 1 rather than erroring.
+          if [ -n "$IN_SIGMAS" ]; then
+            python3 - "$IN_SIGMAS" "$((10#$IN_STEPS))" <<'PY' || exit 1
+          import math
+          import sys
+
+          ERR = "::error::sigmas "
+
+
+          def fail(msg):
+              sys.exit(ERR + msg)
+
+
+          raw, steps = sys.argv[1], int(sys.argv[2])
+          parts = raw.split(",")
+          if len(parts) < 2:
+              fail("needs at least 2 entries")
+          try:
+              values = [float(p) for p in parts]
+          except ValueError:
+              fail("must be comma-separated numbers")
+          if not all(math.isfinite(v) for v in values):
+              fail("must all be finite")
+          if any(v < 0 for v in values):
+              fail("must all be nonnegative")
+          if any(values[i] <= values[i + 1] for i in range(len(values) - 1)):
+              fail("must be strictly decreasing")
+          if values[-1] != 0:
+              fail("must end at 0")
+          if len(values) != steps + 1:
+              fail(f"must have steps + 1 = {steps + 1} entries")
+          print(f"sigmas ok: {len(values) - 1} steps, {raw}")
+          PY
           fi
 
           OUT="$RUNNER_TEMP/out"
@@ -378,6 +419,8 @@ jobs:
           [ "$IN_FA" = true ] && args+=(--fa)
           [ "$IN_MMAP" = true ] && args+=(--mmap)
           [ "$IN_VAE_TILING" = true ] && args+=(--vae-tiling)
+          # One argument: the comma-separated value must not be word-split by the shell.
+          [ -n "$IN_SIGMAS" ] && args+=(--sigmas "$IN_SIGMAS")
           # sd.cpp's default is physical cores, half the vCPUs on these runners.
           if [ -n "$IN_THREADS" ]; then threads="$((10#$IN_THREADS))"; else threads="$(nproc)"; fi
           args+=(-t "$threads")
@@ -447,6 +490,10 @@ jobs:
             echo "| Sampling | $t_samp |"
             echo "| Last step speed | $t_step |"
             echo "| VAE decode | $t_vae |"
+            # Only present when a workflow supplies one, so other workflows' summaries are unchanged.
+            if [ -n "$IN_SIGMAS" ]; then
+              echo "| Sigma schedule | $IN_SIGMAS |"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$result" != "image produced" ]; then
