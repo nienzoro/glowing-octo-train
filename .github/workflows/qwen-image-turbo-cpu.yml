@@ -13,11 +13,11 @@ on:
       width:
         description: Image width (multiple of 32)
         type: string
-        default: '512'
+        default: '576'
       height:
         description: Image height (multiple of 32)
         type: string
-        default: '512'
+        default: '1024'
       threads:
         description: CPU threads (empty = all vCPUs from nproc)
         type: string
