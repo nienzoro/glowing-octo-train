@@ -189,7 +189,6 @@ jobs:
           (( 10#$IN_SWAP_GB <= 16 )) || { echo "::error::swap_gb must be 0-16"; exit 1; }
           stripped="${IN_PROMPT//[[:space:]]/}"
           [ -n "$stripped" ] || { echo "::error::prompt must not be empty"; exit 1; }
-          (( ${#IN_PROMPT} <= 4000 )) || { echo "::error::prompt must be at most 4000 characters"; exit 1; }
           if [ -n "$IN_SEED" ]; then
             [[ "$IN_SEED" =~ ^[0-9]+$ ]] || { echo "::error::seed must be an integer"; exit 1; }
             # Length check first so 10# arithmetic cannot overflow on a huge digit string.
