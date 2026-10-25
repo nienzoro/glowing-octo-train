@@ -1,0 +1,155 @@
+name: moss-image-4step-cpu
+
+# MOSS-Image-SFT on its fixed four-step schedule: Q8_0 diffusion, Q4_K_M Qwen3.5-9B encoder,
+# FLUX.2 VAE, external tokenizer and the fp32 four-step adapter applied at runtime.
+# The profile caps output at 1,048,576 pixels, so 576x1024 leaves headroom.
+on:
+  workflow_dispatch:
+    inputs:
+      width:
+        description: Image width (multiple of 32; width x height must stay within 1,048,576 pixels)
+        type: string
+        default: '576'
+      height:
+        description: Image height (multiple of 32; width x height must stay within 1,048,576 pixels)
+        type: string
+        default: '1024'
+      threads:
+        description: CPU threads (empty = all vCPUs from nproc)
+        type: string
+        default: ''
+      swap_gb:
+        description: Swap size in GB (0 = swap off, so an OOM kill means it does not fit; 0-16)
+        type: string
+        default: '0'
+      mmap:
+        description: Pass --mmap (lets the kernel drop the text encoder pages after encoding)
+        type: boolean
+        default: true
+      flash_attn:
+        description: Pass --fa
+        type: boolean
+        default: true
+      vae_tiling:
+        description: Pass --vae-tiling (cuts VAE decode memory)
+        type: boolean
+        default: true
+      prompt:
+        description: "Prompt (public: shown in this public repo's run logs, keep it SFW)"
+        type: string
+        default: 'Sitting on a white sofa with arms extended wide, resting hands on the backrest, legs crossed at the knee, polished digital illustration of a woman with a slender, elegant feminine build and balanced proportions. She has long, straight auburn hair, a fair complexion, and a captivating facial expression. She is wearing a bright turquoise blue halter-style mini dress with subtle shimmering textures and black fishnet stockings paired with black high-heeled sandals featuring gold stud accents. The artwork features smooth value transitions, believable volume, and high-quality idealization.'
+      seed:
+        description: Seed (empty = random each run; reuse a run's seed to reproduce it)
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+# One run at a time; queue: max keeps every dispatched run waiting (FIFO) instead of cancelling all but the newest.
+concurrency:
+  group: moss-image-4step-cpu
+  queue: max
+
+jobs:
+  # Fixed upstream assets at pinned revisions; the only place they are listed.
+  resolve:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      dm_url: ${{ steps.pick.outputs.dm_url }}
+      dm_file: ${{ steps.pick.outputs.dm_file }}
+      dm_sha: ${{ steps.pick.outputs.dm_sha }}
+      dm_gb: ${{ steps.pick.outputs.dm_gb }}
+      llm_url: ${{ steps.pick.outputs.llm_url }}
+      llm_file: ${{ steps.pick.outputs.llm_file }}
+      llm_sha: ${{ steps.pick.outputs.llm_sha }}
+      llm_gb: ${{ steps.pick.outputs.llm_gb }}
+      vae_url: ${{ steps.pick.outputs.vae_url }}
+      vae_file: ${{ steps.pick.outputs.vae_file }}
+      vae_sha: ${{ steps.pick.outputs.vae_sha }}
+      vae_gb: ${{ steps.pick.outputs.vae_gb }}
+      tokenizer_url: ${{ steps.pick.outputs.tokenizer_url }}
+      tokenizer_file: ${{ steps.pick.outputs.tokenizer_file }}
+      tokenizer_sha: ${{ steps.pick.outputs.tokenizer_sha }}
+      tokenizer_gb: ${{ steps.pick.outputs.tokenizer_gb }}
+      lora_url: ${{ steps.pick.outputs.lora_url }}
+      lora_file: ${{ steps.pick.outputs.lora_file }}
+      lora_sha: ${{ steps.pick.outputs.lora_sha }}
+      lora_gb: ${{ steps.pick.outputs.lora_gb }}
+    steps:
+      - name: Pick assets
+        id: pick
+        run: |
+          set -euo pipefail
+          {
+            echo "dm_url=https://huggingface.co/unsloth/MOSS-Image-SFT-GGUF/resolve/a013f7442e672e67b21f485b4b4f369df5500847/MOSS-Image-SFT-Q8_0.gguf"
+            echo "dm_file=MOSS-Image-SFT-Q8_0.gguf"
+            echo "dm_sha=f18beeb8c6101a3edaff379acce2bdf9fcc1272dfb4c40530c9070f7a0650458"
+            echo "dm_gb=6"
+            echo "llm_url=https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf"
+            echo "llm_file=Qwen3.5-9B-Q4_K_M.gguf"
+            echo "llm_sha=03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
+            echo "llm_gb=6"
+            echo "vae_url=https://huggingface.co/unsloth/MOSS-Image-SFT-FP8/resolve/8fb0d8c3a126cfd1406acaf96698dbfe9d99b680/vae/diffusion_pytorch_model.safetensors"
+            echo "vae_file=flux2_ae.safetensors"
+            echo "vae_sha=c3bdf94dc67ec69b30ea9fe1fa8340085679cae64d019f7c7e4a9921f1a7f17a"
+            echo "vae_gb=1"
+            echo "tokenizer_url=https://huggingface.co/OpenMOSS-Team/MOSS-Image-Base/resolve/85975793d8b3d432f1b6e27f352abaa4c2a4c0d3/tokenizer/tokenizer.json"
+            echo "tokenizer_file=tokenizer.json"
+            echo "tokenizer_sha=06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523"
+            echo "tokenizer_gb=1"
+            echo "lora_url=https://huggingface.co/akhaliq/MOSS-Image-SFT-4-steps/resolve/2ded95c37a029360245926fe72e475e30039bbfb/moss_image_sft_4step_v2.0.safetensors"
+            echo "lora_file=moss_image_sft_4step_v2.0.safetensors"
+            echo "lora_sha=154c7f1455c3bf9925945c2f1ea2e4f09d0d0c67256081384a094b2b585f913f"
+            echo "lora_gb=2"
+          } >> "$GITHUB_OUTPUT"
+
+  probe:
+    needs: resolve
+    # The called upload job deletes the image artifact, so this job must grant actions: write too.
+    permissions:
+      actions: write
+      contents: read
+    uses: ./.github/workflows/sd-cpu-probe.yml
+    with:
+      name: moss-image-4step-cpu
+      prompt: ${{ inputs.prompt }}
+      dm_url: ${{ needs.resolve.outputs.dm_url }}
+      dm_file: ${{ needs.resolve.outputs.dm_file }}
+      dm_sha: ${{ needs.resolve.outputs.dm_sha }}
+      dm_gb: ${{ needs.resolve.outputs.dm_gb }}
+      llm_url: ${{ needs.resolve.outputs.llm_url }}
+      llm_file: ${{ needs.resolve.outputs.llm_file }}
+      llm_sha: ${{ needs.resolve.outputs.llm_sha }}
+      llm_gb: ${{ needs.resolve.outputs.llm_gb }}
+      vae_url: ${{ needs.resolve.outputs.vae_url }}
+      vae_file: ${{ needs.resolve.outputs.vae_file }}
+      vae_sha: ${{ needs.resolve.outputs.vae_sha }}
+      vae_gb: ${{ needs.resolve.outputs.vae_gb }}
+      tokenizer_url: ${{ needs.resolve.outputs.tokenizer_url }}
+      tokenizer_file: ${{ needs.resolve.outputs.tokenizer_file }}
+      tokenizer_sha: ${{ needs.resolve.outputs.tokenizer_sha }}
+      tokenizer_gb: ${{ needs.resolve.outputs.tokenizer_gb }}
+      lora_url: ${{ needs.resolve.outputs.lora_url }}
+      lora_file: ${{ needs.resolve.outputs.lora_file }}
+      lora_sha: ${{ needs.resolve.outputs.lora_sha }}
+      lora_gb: ${{ needs.resolve.outputs.lora_gb }}
+      width: ${{ inputs.width }}
+      height: ${{ inputs.height }}
+      steps: '4'
+      threads: ${{ inputs.threads }}
+      swap_gb: ${{ inputs.swap_gb }}
+      cfg_scale: '1.0'
+      sigmas: '1,0.91,0.717,0.024,0'
+      mmap: ${{ inputs.mmap }}
+      flash_attn: ${{ inputs.flash_attn }}
+      vae_tiling: ${{ inputs.vae_tiling }}
+      labels: Q8_0-Q4_K_M-4step
+      seed: ${{ inputs.seed }}
+    secrets:
+      BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
+      BUCKET_S3_URI: ${{ secrets.BUCKET_S3_URI }}
+      BUCKET_ACCESS_KEY_ID: ${{ secrets.BUCKET_ACCESS_KEY_ID }}
+      BUCKET_SECRET_ACCESS_KEY: ${{ secrets.BUCKET_SECRET_ACCESS_KEY }}

@@ -107,6 +107,38 @@ on:
         description: Optional comma-separated sigma schedule, one value per step plus a trailing 0 (empty = sampler default)
         type: string
         default: ''
+      tokenizer_url:
+        description: Optional tokenizer.json URL (set all four tokenizer inputs or none)
+        type: string
+        default: ''
+      tokenizer_file:
+        description: Optional tokenizer.json local file name
+        type: string
+        default: ''
+      tokenizer_sha:
+        description: Optional tokenizer.json sha256
+        type: string
+        default: ''
+      tokenizer_gb:
+        description: Optional tokenizer approximate size in whole GB, rounded up
+        type: string
+        default: ''
+      lora_url:
+        description: Optional LoRA URL, applied at runtime as <lora:name:1>
+        type: string
+        default: ''
+      lora_file:
+        description: Optional LoRA local file name
+        type: string
+        default: ''
+      lora_sha:
+        description: Optional LoRA sha256
+        type: string
+        default: ''
+      lora_gb:
+        description: Optional LoRA approximate size in whole GB, rounded up
+        type: string
+        default: ''
     secrets:
       BUCKET_S3_ENDPOINT:
         required: false
@@ -147,8 +179,17 @@ env:
   IN_LABELS: ${{ inputs.labels }}
   IN_SEED: ${{ inputs.seed }}
   IN_SIGMAS: ${{ inputs.sigmas }}
+  IN_TOKENIZER_URL: ${{ inputs.tokenizer_url }}
+  IN_TOKENIZER_FILE: ${{ inputs.tokenizer_file }}
+  IN_TOKENIZER_SHA: ${{ inputs.tokenizer_sha }}
+  IN_TOKENIZER_GB: ${{ inputs.tokenizer_gb }}
+  IN_LORA_URL: ${{ inputs.lora_url }}
+  IN_LORA_FILE: ${{ inputs.lora_file }}
+  IN_LORA_SHA: ${{ inputs.lora_sha }}
+  IN_LORA_GB: ${{ inputs.lora_gb }}
   SD_REPO: https://github.com/leejet/stable-diffusion.cpp.git
-  SD_COMMIT: 3f8527a46c54ecf4cb4ed6003da8e8982283c73c
+  # MOSS-Image support landed after 3f8527a; 0518b34 is the build the four-step profile was measured on.
+  SD_COMMIT: 0518b34374761cb82aeda5ad3c2f0686fdad2cec
   # Upstream's CPU-release flags; part of the build cache key, so editing them rebuilds.
   SD_CMAKE_FLAGS: -DCMAKE_BUILD_TYPE=Release -DSD_BUILD_SHARED_LIBS=ON -DSD_BUILD_SHARED_GGML_LIB=ON -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH=$ORIGIN
 
@@ -183,6 +224,21 @@ jobs:
           for v in IN_DM_URL IN_LLM_URL IN_VAE_URL; do
             [[ "${!v}" == https://huggingface.co/* ]] || { echo "::error::$v must start with https://huggingface.co/"; exit 1; }
           done
+          # Tokenizer and LoRA are optional, but a partially filled set is a mistake.
+          optional_asset() {
+            local url="IN_$1_URL" file="IN_$1_FILE" sha="IN_$1_SHA" gb="IN_$1_GB" count=0 v
+            for v in "$url" "$file" "$sha" "$gb"; do
+              if [ -n "${!v}" ]; then count=$((count + 1)); fi
+            done
+            if [ "$count" -eq 0 ]; then return 0; fi
+            if [ "$count" -ne 4 ]; then echo "::error::${1,,} inputs must be all set or all empty"; exit 1; fi
+            [[ "${!gb}" =~ ^[0-9]+$ ]] || { echo "::error::$gb must be an integer"; exit 1; }
+            [[ "${!file}" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "::error::$file must match [A-Za-z0-9_.-]"; exit 1; }
+            [[ "${!sha}" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::$sha must be a lowercase sha256"; exit 1; }
+            [[ "${!url}" == https://huggingface.co/* ]] || { echo "::error::$url must start with https://huggingface.co/"; exit 1; }
+          }
+          optional_asset TOKENIZER
+          optional_asset LORA
           (( 10#$IN_WIDTH >= 32 && 10#$IN_WIDTH % 32 == 0 )) || { echo "::error::width must be a multiple of 32"; exit 1; }
           (( 10#$IN_HEIGHT >= 32 && 10#$IN_HEIGHT % 32 == 0 )) || { echo "::error::height must be a multiple of 32"; exit 1; }
           (( 10#$IN_STEPS >= 1 )) || { echo "::error::steps must be >= 1"; exit 1; }
@@ -256,11 +312,13 @@ jobs:
       - name: Pick models and directory
         run: |
           set -euo pipefail
-          need=$((10#$IN_DM_GB + 10#$IN_LLM_GB + 10#$IN_VAE_GB + 1))   # +1 GB margin
+          need=$((10#$IN_DM_GB + 10#$IN_LLM_GB + 10#$IN_VAE_GB + 10#${IN_TOKENIZER_GB:-0} + 10#${IN_LORA_GB:-0} + 1))   # +1 GB margin
           {
             echo "DM_FILE=$IN_DM_FILE"
             echo "LLM_FILE=$IN_LLM_FILE"
             echo "VAE_FILE=$IN_VAE_FILE"
+            echo "TOKENIZER_FILE=$IN_TOKENIZER_FILE"
+            echo "LORA_FILE=$IN_LORA_FILE"
           } >> "$GITHUB_ENV"
 
           # The runner's default swapfile lives on /mnt; drop it to free space and get clean swap numbers.
@@ -341,13 +399,21 @@ jobs:
       - name: Download models
         run: |
           set -euo pipefail
-          fetch() { # url file sha256
-            curl --fail --location --show-error --retry 3 -o "$MODELS_DIR/$2" "$1"
-            echo "$3  $MODELS_DIR/$2" | sha256sum -c -
+          fetch() { # url file sha256 [target dir]
+            local url="$1" file="$2" sha="$3" dir="${4:-$MODELS_DIR}"
+            curl --fail --location --show-error --retry 3 -o "$dir/$file" "$url"
+            echo "$sha  $dir/$file" | sha256sum -c -
           }
           fetch "$IN_DM_URL" "$IN_DM_FILE" "$IN_DM_SHA"
           fetch "$IN_LLM_URL" "$IN_LLM_FILE" "$IN_LLM_SHA"
           fetch "$IN_VAE_URL" "$IN_VAE_FILE" "$IN_VAE_SHA"
+          if [ -n "$IN_TOKENIZER_URL" ]; then
+            fetch "$IN_TOKENIZER_URL" "$IN_TOKENIZER_FILE" "$IN_TOKENIZER_SHA"
+          fi
+          if [ -n "$IN_LORA_URL" ]; then
+            mkdir -p "$MODELS_DIR/loras"
+            fetch "$IN_LORA_URL" "$IN_LORA_FILE" "$IN_LORA_SHA" "$MODELS_DIR/loras"
+          fi
           df -h "$MODELS_DIR"
           # Drop the download page cache so it does not skew memory readings.
           sync
@@ -406,15 +472,22 @@ jobs:
           echo "$seed" > seed.txt
           echo "seed=$seed" >> "$GITHUB_OUTPUT"
 
+          prompt="$IN_PROMPT"
+          # sd.cpp selects LoRAs with a prompt tag and finds the file in --lora-model-dir.
+          if [ -n "$IN_LORA_FILE" ]; then
+            prompt+=" <lora:${IN_LORA_FILE%.*}:1>"
+          fi
           args=(
             --diffusion-model "$MODELS_DIR/$DM_FILE"
             --llm "$MODELS_DIR/$LLM_FILE"
             --vae "$MODELS_DIR/$VAE_FILE"
-            -p "$IN_PROMPT"
+            -p "$prompt"
             -W "$((10#$IN_WIDTH))" -H "$((10#$IN_HEIGHT))"
             --steps "$((10#$IN_STEPS))"
             --cfg-scale "$IN_CFG" --sampling-method euler --backend cpu -s "$seed" -v
           )
+          [ -n "$IN_TOKENIZER_FILE" ] && args+=(--tokenizer "$MODELS_DIR/$TOKENIZER_FILE")
+          [ -n "$IN_LORA_FILE" ] && args+=(--lora-model-dir "$MODELS_DIR/loras" --lora-apply-mode at_runtime)
           [ "$IN_FA" = true ] && args+=(--fa)
           [ "$IN_MMAP" = true ] && args+=(--mmap)
           [ "$IN_VAE_TILING" = true ] && args+=(--vae-tiling)
@@ -479,6 +552,12 @@ jobs:
             echo "| Result | $result |"
             echo "| Runner | nproc $nproc_v, cores $cps x threads/core $tpc x sockets $sockets, $cpu, avx2 $avx2, avx512f $avx512, MemTotal $memtotal |"
             echo "| Build | $os, $gccv, sd.cpp ${sdc:0:7} built from source |"
+            if [ -n "$IN_TOKENIZER_FILE" ]; then
+              echo "| Tokenizer | $IN_TOKENIZER_FILE |"
+            fi
+            if [ -n "$IN_LORA_FILE" ]; then
+              echo "| LoRA | $IN_LORA_FILE, runtime, strength 1 |"
+            fi
             echo "| Inputs | quants $IN_LABELS, ${IN_WIDTH}x${IN_HEIGHT}, steps $IN_STEPS, seed $seed_used, cfg $IN_CFG, threads $threads_used, swap ${IN_SWAP_GB} GB, mmap $IN_MMAP, fa $IN_FA, vae tiling $IN_VAE_TILING |"
             echo "| Wall time | $wall |"
             echo "| Max RSS | $rss |"
