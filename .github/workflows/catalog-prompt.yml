@@ -1,0 +1,87 @@
+name: catalog-prompt
+
+on:
+  workflow_call:
+    inputs:
+      prompt:
+        type: string
+        default: ''
+      seed:
+        type: string
+        default: ''
+      recipe:
+        type: string
+        default: ''
+    secrets:
+      CATALOG_REPO_TOKEN:
+        required: false
+    outputs:
+      prompt:
+        value: ${{ jobs.compose.outputs.prompt }}
+      seed:
+        value: ${{ jobs.compose.outputs.seed }}
+      selection:
+        value: ${{ jobs.compose.outputs.selection }}
+
+jobs:
+  compose:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      prompt: ${{ steps.compose.outputs.prompt }}
+      seed: ${{ steps.compose.outputs.seed }}
+      selection: ${{ steps.compose.outputs.selection }}
+    steps:
+      - name: Require the catalog token
+        if: inputs.prompt == ''
+        env:
+          TOKEN: ${{ secrets.CATALOG_REPO_TOKEN }}
+        run: '[ -n "$TOKEN" ] || { echo "::error::CATALOG_REPO_TOKEN is not set"; exit 1; }'
+
+      - name: Check out the catalog repo
+        if: inputs.prompt == ''
+        uses: actions/checkout@v7
+        with:
+          repository: nqminhuit/qwen-img-unsc
+          ref: main
+          token: ${{ secrets.CATALOG_REPO_TOKEN }}
+          path: catalog-src
+          depth: 1
+          persist-credentials: false
+
+      # Never echo the prompt: only the seed and selection IDs reach the summary.
+      - name: Compose or pass through
+        id: compose
+        env:
+          IN_PROMPT: ${{ inputs.prompt }}
+          IN_SEED: ${{ inputs.seed }}
+          IN_RECIPE: ${{ inputs.recipe }}
+        run: |
+          set -euo pipefail
+          if [ -n "$IN_PROMPT" ]; then
+            prompt="$IN_PROMPT"
+            seed="$IN_SEED"
+            if [ -z "$seed" ]; then
+              seed="$(( $(od -An -N4 -tu4 /dev/urandom) & 0x7fffffff ))"
+            fi
+            selection="explicit"
+          else
+            args=(--json)
+            if [ -n "$IN_SEED" ]; then args+=(--seed "$IN_SEED"); fi
+            if [ -n "$IN_RECIPE" ]; then args+=(--recipe "$IN_RECIPE"); fi
+            python3 catalog-src/scripts/catalog-prompt.py "${args[@]}" > "$RUNNER_TEMP/prompt.json"
+            prompt="$(jq -r .prompt "$RUNNER_TEMP/prompt.json")"
+            seed="$(jq -r .seed "$RUNNER_TEMP/prompt.json")"
+            selection="$(jq -c '{recipe, blocks, modifiers, colour}' "$RUNNER_TEMP/prompt.json")"
+          fi
+          delimiter="PROMPT_EOF_$(od -An -N8 -tx8 /dev/urandom | tr -d ' \n')"
+          {
+            echo "prompt<<$delimiter"
+            printf '%s\n' "$prompt"
+            echo "$delimiter"
+            echo "seed=$seed"
+            echo "selection=$selection"
+          } >> "$GITHUB_OUTPUT"
+          echo "seed: $seed" >> "$GITHUB_STEP_SUMMARY"
+          echo "selection: $selection" >> "$GITHUB_STEP_SUMMARY"

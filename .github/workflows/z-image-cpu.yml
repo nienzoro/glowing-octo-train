@@ -46,9 +46,9 @@ on:
         type: boolean
         default: false
       prompt:
-        description: "Prompt (public: shown in this public repo's run logs, keep it SFW)"
+        description: "Prompt (empty = auto-generate from the qwen-img-unsc catalog; pasted prompts are public in run logs)"
         type: string
-        default: 'Sitting on a white sofa with arms extended wide, resting hands on the backrest, legs crossed at the knee, polished digital illustration of a woman with a slender, elegant feminine build and balanced proportions. She has long, straight auburn hair, a fair complexion, and a captivating facial expression. She is wearing a bright turquoise blue halter-style mini dress with subtle shimmering textures and black fishnet stockings paired with black high-heeled sandals featuring gold stud accents. The artwork features smooth value transitions, believable volume, and high-quality idealization.'
+        default: ''
       semi_realistic:
         description: Prepend the semi-realistic wording (Z-Image renders plain illustration wording as a photo)
         type: boolean
@@ -126,8 +126,16 @@ jobs:
             echo "vae_gb=$vae_gb"
           } >> "$GITHUB_OUTPUT"
 
+  compose:
+    uses: ./.github/workflows/catalog-prompt.yml
+    with:
+      prompt: ${{ inputs.prompt }}
+      seed: ${{ inputs.seed }}
+    secrets:
+      CATALOG_REPO_TOKEN: ${{ secrets.CATALOG_REPO_TOKEN }}
+
   probe:
-    needs: resolve
+    needs: [resolve, compose]
     # The called upload job deletes the image artifact, so this job must grant actions: write too.
     permissions:
       actions: write
@@ -135,7 +143,7 @@ jobs:
     uses: ./.github/workflows/sd-cpu-probe.yml
     with:
       name: z-image-cpu
-      prompt: ${{ format('{0}{1}', inputs.semi_realistic && 'Polished semi-realistic character illustration in the style of high-end digital concept art, crisp outlines, soft gradient shading, glossy highlights. ' || '', inputs.prompt) }}
+      prompt: ${{ format('{0}{1}', inputs.semi_realistic && 'Polished semi-realistic character illustration in the style of high-end digital concept art, crisp outlines, soft gradient shading, glossy highlights. ' || '', needs.compose.outputs.prompt) }}
       dm_url: ${{ needs.resolve.outputs.dm_url }}
       dm_file: ${{ needs.resolve.outputs.dm_file }}
       dm_sha: ${{ needs.resolve.outputs.dm_sha }}
@@ -158,7 +166,7 @@ jobs:
       flash_attn: ${{ inputs.flash_attn }}
       vae_tiling: ${{ inputs.vae_tiling }}
       labels: ${{ inputs.diffusion }}-${{ inputs.text_encoder }}
-      seed: ${{ inputs.seed }}
+      seed: ${{ needs.compose.outputs.seed }}
     secrets:
       BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
       BUCKET_S3_URI: ${{ secrets.BUCKET_S3_URI }}
