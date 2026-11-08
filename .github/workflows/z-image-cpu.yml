@@ -143,7 +143,6 @@ jobs:
     uses: ./.github/workflows/sd-cpu-probe.yml
     with:
       name: z-image-cpu
-      prompt: ${{ format('{0}{1}', inputs.semi_realistic && 'Polished semi-realistic character illustration in the style of high-end digital concept art, crisp outlines, soft gradient shading, glossy highlights. ' || '', needs.compose.outputs.prompt) }}
       dm_url: ${{ needs.resolve.outputs.dm_url }}
       dm_file: ${{ needs.resolve.outputs.dm_file }}
       dm_sha: ${{ needs.resolve.outputs.dm_sha }}
@@ -168,6 +167,7 @@ jobs:
       labels: ${{ inputs.diffusion }}-${{ inputs.text_encoder }}
       seed: ${{ needs.compose.outputs.seed }}
     secrets:
+      PROMPT: ${{ format('{0}{1}', inputs.semi_realistic && 'Polished semi-realistic character illustration in the style of high-end digital concept art, crisp outlines, soft gradient shading, glossy highlights. ' || '', needs.compose.outputs.prompt) }}
       BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
       BUCKET_S3_URI: ${{ secrets.BUCKET_S3_URI }}
       BUCKET_ACCESS_KEY_ID: ${{ secrets.BUCKET_ACCESS_KEY_ID }}

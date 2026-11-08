@@ -129,7 +129,6 @@ jobs:
     uses: ./.github/workflows/sd-cpu-probe.yml
     with:
       name: qwen-image-turbo-cpu
-      prompt: ${{ needs.compose.outputs.prompt }}
       dm_url: ${{ needs.resolve.outputs.dm_url }}
       dm_file: ${{ needs.resolve.outputs.dm_file }}
       dm_sha: ${{ needs.resolve.outputs.dm_sha }}
@@ -156,6 +155,7 @@ jobs:
       # Diffusers' fixed Turbo schedule plus the trailing 0 that sd.cpp requires.
       sigmas: '1,0.978453,0.95418,0.926626,0.89508,0.845148,0.704534,0.414568,0'
     secrets:
+      PROMPT: ${{ needs.compose.outputs.prompt }}
       BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
       BUCKET_S3_URI: ${{ secrets.BUCKET_S3_URI }}
       BUCKET_ACCESS_KEY_ID: ${{ secrets.BUCKET_ACCESS_KEY_ID }}

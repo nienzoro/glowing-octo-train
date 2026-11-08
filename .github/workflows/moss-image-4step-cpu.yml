@@ -123,7 +123,6 @@ jobs:
     uses: ./.github/workflows/sd-cpu-probe.yml
     with:
       name: moss-image-4step-cpu
-      prompt: ${{ needs.compose.outputs.prompt }}
       dm_url: ${{ needs.resolve.outputs.dm_url }}
       dm_file: ${{ needs.resolve.outputs.dm_file }}
       dm_sha: ${{ needs.resolve.outputs.dm_sha }}
@@ -157,6 +156,7 @@ jobs:
       labels: Q8_0-Q4_K_M-4step
       seed: ${{ needs.compose.outputs.seed }}
     secrets:
+      PROMPT: ${{ needs.compose.outputs.prompt }}
       BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
       BUCKET_S3_URI: ${{ secrets.BUCKET_S3_URI }}
       BUCKET_ACCESS_KEY_ID: ${{ secrets.BUCKET_ACCESS_KEY_ID }}

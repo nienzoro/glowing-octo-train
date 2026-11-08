@@ -47,7 +47,7 @@ jobs:
           ref: main
           token: ${{ secrets.CATALOG_REPO_TOKEN }}
           path: catalog-src
-          depth: 1
+          fetch-depth: 1
           persist-credentials: false
 
       # Never echo the prompt: only the seed and selection IDs reach the summary.
