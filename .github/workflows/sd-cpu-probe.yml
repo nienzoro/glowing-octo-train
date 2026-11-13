@@ -507,6 +507,8 @@ jobs:
       - name: Summary
         if: always()
         run: |
+          # Earlier failures can leave metrics/logs absent; still write a best-effort summary.
+          set +e
           set -uo pipefail
           cd "${OUT:-/nonexistent}" 2>/dev/null || { echo "No output dir, nothing to summarise" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
           na=n/a
@@ -534,7 +536,10 @@ jobs:
           # vmstat si/so are KiB/s sampled every 5 s; skip the since-boot first row.
           vmsw="$(awk '$1 ~ /^[0-9]+$/ && NR>3 {si+=$7; so+=$8; n++} END {if (n) printf "si %.0f MiB, so %.0f MiB", si*5/1024, so*5/1024}' vmstat.log 2>/dev/null)"; : "${vmsw:=$na}"
 
-          clean="$(tr '\r' '\n' < sd.log 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')"
+          clean=""
+          if [ -f sd.log ]; then
+            clean="$(tr '\r' '\n' < sd.log | sed 's/\x1b\[[0-9;]*m//g')"
+          fi
           grab() { printf '%s\n' "$clean" | grep -iE "$1" | tail -1 | sed -E 's/^\[[A-Z]+ *\] *//' | cut -c1-200; }
           t_enc="$(grab 'get_learned_condition completed')"; : "${t_enc:=$na}"
           t_samp="$(grab 'sampling completed')"; : "${t_samp:=$na}"
